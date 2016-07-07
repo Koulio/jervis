@@ -15,10 +15,22 @@
    */
 
 import hudson.util.Secret
+import java.util.concurrent.locks.ReentrantLock
 import jenkins.model.Jenkins
 import net.gleske.jervis.exceptions.SecurityException
 import net.gleske.jervis.lang.lifecycleGenerator
 import net.gleske.jervis.remotes.GitHub
+
+//create a lock for use in threads
+ReentrantLock.metaClass.withLock = {
+    lock()
+    try {
+        it()
+    }
+    finally {
+        unlock()
+    }
+}
 
 def git_service = new GitHub()
 //Pre-job setup based on the type of remote
@@ -64,7 +76,7 @@ public String getFolderRSAKeyCredentials(String folder, String credentials_id) {
 }
 
 //generate Jenkins jobs
-def generate_project_for(def git_service, String JERVIS_BRANCH) {
+def generate_project_for(def git_service, String JERVIS_BRANCH, ReentrantLock lock) {
     //def JERVIS_BRANCH = it
     def folder_listing = git_service.getFolderListing(project, '/', JERVIS_BRANCH)
     def generator = new lifecycleGenerator()
@@ -128,6 +140,7 @@ def generate_project_for(def git_service, String JERVIS_BRANCH) {
         println "Skipping branch: ${JERVIS_BRANCH}"
         return
     }
+    lock.withLock {
     //chooses job type based on Jervis YAML
     def jervis_jobType
     if(generator.isMatrixBuild()) {
@@ -225,6 +238,7 @@ def generate_project_for(def git_service, String JERVIS_BRANCH) {
             }
         }
     }
+    }
 }
 
 if("${project}".size() > 0 && "${project}".split('/').length == 2) {
@@ -261,8 +275,18 @@ if("${project}".size() > 0 && "${project}".split('/').length == 2) {
         generate_project_for(git_service, branch)
     }
     else {
+        //threaded code
+        List<Thread> threads = []
+        //lock for thread safe execution
+        ReentrantLock lock = new ReentrantLock()
         git_service.branches("${project}").each { branch ->
-            generate_project_for(git_service, branch)
+            threads << Thread.start {
+                generate_project_for(git_service, branch, lock)
+            }
+        }
+        //wait for all threads to finish before continuing
+        threads.each {
+            it.join()
         }
     }
 }
